@@ -3,6 +3,7 @@ import { BoneAutoMapper } from '../bone-automap/BoneAutoMapper.ts'
 import { MixamoMapper } from '../bone-automap/MixamoMapper.ts'
 import { AnimationRetargetService } from '../AnimationRetargetService.ts'
 import { Mesh2MotionMapper } from '../bone-automap/Mesh2MotionMapper.ts'
+import { BoneMappingFile } from '../BoneMappingFile.ts'
 
 // when we are auto-mapping, keep track of what rig type we matched target against
 export enum TargetBoneMappingType {
@@ -21,6 +22,9 @@ export class StepBoneMapping extends EventTarget {
   private target_bones_filter: HTMLInputElement | null = null
   private clear_mappings_button: HTMLButtonElement | null = null
   private auto_map_button: HTMLButtonElement | null = null
+  private export_mappings_button: HTMLButtonElement | null = null
+  private import_mappings_button: HTMLButtonElement | null = null
+  private import_mappings_file_input: HTMLInputElement | null = null
   private view_bone_tree_button: HTMLButtonElement | null = null
   private source_bone_count: HTMLSpanElement | null = null
   private target_bone_count: HTMLSpanElement | null = null
@@ -40,6 +44,9 @@ export class StepBoneMapping extends EventTarget {
     this.target_bones_filter = document.getElementById('target-bones-filter') as HTMLInputElement
     this.clear_mappings_button = document.getElementById('clear-mappings-button') as HTMLButtonElement
     this.auto_map_button = document.getElementById('auto-map-button') as HTMLButtonElement
+    this.export_mappings_button = document.getElementById('export-mappings-button') as HTMLButtonElement
+    this.import_mappings_button = document.getElementById('import-mappings-button') as HTMLButtonElement
+    this.import_mappings_file_input = document.getElementById('import-mappings-file') as HTMLInputElement
     this.view_bone_tree_button = document.getElementById('view-bone-tree-button') as HTMLButtonElement
 
     // if we get a match, show what type of match we got on the UI for feedback
@@ -81,8 +88,112 @@ export class StepBoneMapping extends EventTarget {
         this.update_target_bones_list()
       })
 
+      this.export_mappings_button?.addEventListener('click', () => {
+        this.export_bone_mappings()
+      })
+
+      this.import_mappings_button?.addEventListener('click', () => {
+        this.import_mappings_file_input?.click()
+      })
+
+      this.import_mappings_file_input?.addEventListener('change', (event) => {
+        const input = event.target as HTMLInputElement
+        const file = input.files?.[0]
+        if (file !== undefined) {
+          this.import_bone_mappings(file)
+        }
+        // Reset so re-selecting the same file fires 'change' again
+        input.value = ''
+      })
+
       this.has_added_event_listeners = true
     }
+  }
+
+  private export_bone_mappings (): void {
+    const retarget_service = AnimationRetargetService.getInstance()
+    const mappings = retarget_service.get_bone_mappings()
+    if (mappings.size === 0) {
+      console.warn('No bone mappings to export.')
+      return
+    }
+
+    const json_text = BoneMappingFile.serialize(
+      mappings,
+      retarget_service.get_skeleton_type(),
+      retarget_service.get_target_mapping_type()
+    )
+
+    const blob = new Blob([json_text], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+
+    const hidden_link = document.querySelector('#download-hidden-link') as HTMLAnchorElement | null
+    const link = hidden_link ?? document.createElement('a')
+    link.href = url
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    link.download = `bone-mapping-${retarget_service.get_skeleton_type()}-${timestamp}.json`
+    link.click()
+
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
+  private import_bone_mappings (file: File): void {
+    if (!this.has_target_skeleton()) {
+      console.warn('Cannot import bone mappings: no target skeleton loaded. Upload a rig first.')
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = reader.result as string
+      let parsed: ReturnType<typeof BoneMappingFile.deserialize>
+      try {
+        parsed = BoneMappingFile.deserialize(text)
+      } catch (err) {
+        console.error('Failed to parse bone mapping file:', err)
+        return
+      }
+
+      const valid_source_names = new Set(this.get_source_bone_names())
+      const valid_target_names = new Set(this.get_target_bone_names())
+
+      const accepted = new Map<string, string>()
+      const skipped: Array<{ target: string, source: string, reason: string }> = []
+
+      for (const [target_name, source_name] of parsed.mappings) {
+        if (!valid_target_names.has(target_name)) {
+          skipped.push({ target: target_name, source: source_name, reason: 'target bone not found' })
+          continue
+        }
+        if (!valid_source_names.has(source_name)) {
+          skipped.push({ target: target_name, source: source_name, reason: 'source bone not found' })
+          continue
+        }
+        accepted.set(target_name, source_name)
+      }
+
+      const retarget_service = AnimationRetargetService.getInstance()
+      this.clear_all_bone_mappings()
+      const live_mappings = retarget_service.get_bone_mappings()
+      for (const [t, s] of accepted) {
+        live_mappings.set(t, s)
+      }
+      retarget_service.set_target_mapping_type(TargetBoneMappingType.Custom)
+
+      console.log(`Imported ${accepted.size} bone mappings (${skipped.length} skipped).`)
+      if (skipped.length > 0) {
+        console.log('Skipped entries:', skipped)
+      }
+
+      this.update_target_bones_list()
+      this.update_clear_button_visibility()
+      this.update_bone_match_type_display()
+      this.dispatchEvent(new CustomEvent('bone-mappings-changed'))
+    }
+    reader.onerror = () => {
+      console.error('Failed to read bone mapping file:', reader.error)
+    }
+    reader.readAsText(file)
   }
 
   public source_armature_updated (): void {
@@ -350,9 +461,13 @@ export class StepBoneMapping extends EventTarget {
 
   // Update visibility of clear mappings button
   private update_clear_button_visibility (): void {
-    if (this.clear_mappings_button === null) return
-
-    this.clear_mappings_button.style.display = this.has_bone_mappings() ? 'block' : 'none'
+    const has_mappings = this.has_bone_mappings()
+    if (this.clear_mappings_button !== null) {
+      this.clear_mappings_button.style.display = has_mappings ? 'block' : 'none'
+    }
+    if (this.export_mappings_button !== null) {
+      this.export_mappings_button.style.display = has_mappings ? 'block' : 'none'
+    }
   }
 
   // Show what type of auto-mapping match we got on the UI

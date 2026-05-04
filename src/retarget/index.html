@@ -126,6 +126,13 @@
                             <span>Your 3D Rig Model</span>
                             <span id="auto-bone-map-match">✨Mixamo</span>
                             <span id="view-bone-tree-button" data-tippy-content="View bone hierarchy for for debugging purposes" style="display: none;">👓</span>
+                            <button id="export-mappings-button" class="bone-map-icon-button" style="display: none;" data-tippy-content="Export bone mappings to a JSON file" aria-label="Export bone mappings">
+                                <span class="material-symbols-outlined">arrow_downward</span>
+                            </button>
+                            <button id="import-mappings-button" class="bone-map-icon-button" data-tippy-content="Import bone mappings from a JSON file" aria-label="Import bone mappings">
+                                <span class="material-symbols-outlined">arrow_upward</span>
+                            </button>
+                            <input type="file" id="import-mappings-file" accept=".json,application/json" style="display: none;" />
                         </p>
                         <div class="bone-map-content">
                             <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
